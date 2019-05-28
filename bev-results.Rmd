@@ -1,0 +1,517 @@
+---
+title: "Bev and other medications"
+author: "Mustafa Ascha"
+date: "December 4, 2018"
+output:
+  word_document: default
+  pdf_document:
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+library(tidyverse)
+library(pander)
+library(survminer)
+library(gridExtra)
+devtools::load_all("mabsr")
+#if (!exists("results")) results   <-       read_rds("results/models-mabs.rds")
+#if (!exists("ps"))      backup_ps <- ps <- read_rds("results/plots.rds")
+backup_ps <- ps <- results$plots
+#results[["to"]] <- read_rds("table-ones.rds")
+
+hr_table <-
+  plot_coxs(results, F) %>%
+    filter(grepl("evacizumab", term) & !grepl(":", term)) %>%
+    distinct() %>%
+    modify_at("weighted", ~ gsub("not ", "un", .x)) %>%
+    modify_at("phr", ~ ifelse(.x %in% c(0, 1e-4), " <0.001", .x)) %>%
+    mutate(estimate = paste(hr, " (", lci, "-", hci, " p:", phr, ")", sep = "")) %>%
+    filter(
+      (weighted == "weighted" & pop == "Overall") | (pop == "Overall" & mdl == "mv") |
+        (pop == "Brain Mets" & weighted != "weighted") |
+        mdl == "st"
+    ) %>%
+    select(matched, pop, mdl, estimate) %>%
+    #mutate(r = row_number()) %>%
+    spread(pop, estimate) %>%
+    arrange(desc(matched))
+
+bm_mv_cox <- 
+  results[["bm_mv_cox"]][[2]] %>% 
+    mutate(HR = paste(estimate, " (", conf.low, "-", conf.high, ", p:", p.value, ")", sep = "")) %>% 
+    select(term, Multivariable = HR) %>% 
+    modify_at("term", ~ gsub("bmab01", "Bevacizumab", .x))
+
+bm_uni_cox <- 
+  results[["bm_propensity_hrs"]] %>% 
+  map_dfr(2) %>% 
+  distinct() %>% 
+  filter(
+    (weighted != "weighted")
+    ) %>% 
+  spread(matched, HR) %>% 
+  select(-weighted) 
+
+mv_cox <- 
+  results[["mv_cox"]][[2]] %>% 
+    mutate(HR = paste(estimate, " (", conf.low, "-", conf.high, ", p:", p.value, ")", sep = "")) %>% 
+    select(term, Multivariable = HR) %>% 
+    modify_at("term", ~ gsub("bmab01", "Bevacizumab", .x))
+
+uni_cox <- 
+  results[["propensity_hrs"]] %>% 
+  map_dfr(2) %>% 
+  distinct() %>% 
+  filter(
+    (weighted != "weighted" | (term == "Bevacizumab" & weighted == "weighted")) & 
+      !(term == "Bevacizumab" & weighted == "not weighted")
+    ) %>% 
+  spread(matched, HR) %>% 
+  select(-weighted) %>%
+  filter(!grepl(":", term))
+
+get_bev_hr <- function(mv_cox, uni_cox) {
+  m <- 
+    mv_cox %>% 
+      filter(grepl("evacizu", term)) %>% 
+      mutate(matched = "unmatched") %>% 
+      select(term, matched, HR = Multivariable) %>% 
+      mutate(mdl = "mv")
+  u <- 
+    uni_cox %>% 
+      gather(matched, HR, -term) %>% 
+      filter(grepl("evacizu", term)) %>% 
+      mutate(mdl = "uni")
+  bind_rows(m, u) %>% select(-term)
+}
+
+r_table <- 
+map2_dfr(list(list(mv_cox, uni_cox), list(bm_mv_cox, bm_uni_cox)), 
+     c("Overall", "Brain Mets"), 
+     ~ get_bev_hr(.x[[1]], .x[[2]]) %>% mutate(pop = .y)) %>% 
+  spread(pop, HR)
+
+```
+
+\pagebreak
+
+# Figures
+
+## Survival 
+
+### Brain mets
+
+```{r, fig.height=4.5, fig.width=6}
+
+names(hr_table) <- gsub(" ", "_", names(hr_table))
+
+ps$uni_cox_bm$plot  <-
+  ps$uni_cox_bm$plot + 
+  labs(color = "Treatment", fill = "Treatment", x = "")  + 
+  annotate(
+    geom = "label", 
+    #label = paste("Brain Metastases Population\nUnivariable HR:\n", hr_table[["Overall"]][1]), 
+    label = paste("Univariable HR:\n", with(hr_table, Brain_Mets[matched == "unmatched" & mdl == "uni"])), 
+    #label = "Univariable", 
+    x = 43.5, 
+    y = 0.8
+    )
+
+ps$mv_cox_bm <- 
+  ps$mv_cox_bm + 
+  labs(color = "Treatment", x = "Time")  + 
+  annotate(
+    geom = "label", 
+    #label = paste("Brain Metastases Population\nMultivariable HR:\n", hr_table[["Overall"]][1]), 
+    label = paste("Multivariable HR:\n", with(hr_table, Brain_Mets[matched == "unmatched" & mdl == "mv"])), 
+    #label = "Multivariable", 
+    x = 43, 
+    y = 0.8
+    )  
+
+```
+
+```{r fig.height=6.5}
+png("figs/bm-srv-bev.png", units = "in", width = 4, height = 6, res = 300)
+arrange_srv(ps$uni_cox_bm$plot, ps$mv_cox_bm, ps$uni_cox_bm$table)
+dev.off()
+arrange_srv(ps$uni_cox_bm$plot, ps$mv_cox_bm, ps$uni_cox_bm$table)
+```
+
+\pagebreak
+
+### Overall
+
+```{r, fig.height=4.5, fig.width=6}
+ps$uni_cox_ov$plot <- 
+  ps$uni_cox_ov$plot + 
+  labs(color = "Treatment", fill = "Treatment", x = "")  + 
+  annotate(
+    geom = "label", 
+    label = paste("Univariable AHR:\n", with(hr_table, Overall[matched == "unmatched" & mdl == "uni"])), 
+    x = 43.5, 
+    y = 0.8
+    )
+
+ps$mv_cox_ov <- 
+  ps$mv_cox_ov + 
+  labs(color = "Treatment", fill = "Treatment", x = "Time")  + 
+  annotate(
+    geom = "label", 
+    label = paste("Multivariable HR:\n", with(hr_table, Overall[matched == "unmatched" & mdl == "mv"])), 
+    x = 43, 
+    y = 0.8
+    )
+```
+
+```{r fig.height=6.5}
+png("figs/ov-srv-bev.png", units = "in", width = 4, height = 6, res = 300)
+arrange_srv(ps$uni_cox_ov$plot, ps$mv_cox_ov, ps$uni_cox_ov$table)
+dev.off()
+arrange_srv(ps$uni_cox_ov$plot, ps$mv_cox_ov, ps$uni_cox_ov$table)
+```
+
+\pagebreak
+
+# Tables
+
+## Clinical and demographics table
+
+```{r}
+colnames(results$to[["br_bev"]]) <- gsub(":", "\n", colnames(results$to[["br_bev"]]))
+results$to[["br_bev"]][,c(2, 1, 4, 3)] %>% pander(split.table = Inf)
+
+cdt <- results$to[["br_bev"]][,c(2, 1, 4, 3)]
+nms <- rownames(cdt)
+rownames(cdt)  <- NULL
+write_csv(data.frame(nms, cdt), "to.csv")
+```
+
+## Bevacizumab hazard ratios
+
+```{r}
+pander(hr_table)
+```
+
+\pagebreak
+
+# Supplementary Material
+
+## Figures
+
+### Odds of Bevacizumab Treatment
+
+```{r }
+png("figs/odds-bev.png", units = "in", width = 4, height = 6, res = 300)
+compose(glm_ggplot, plot_glms)(results) 
+dev.off()
+compose(glm_ggplot, plot_glms)(results) 
+```
+
+## Tables
+
+### Hazards of mortality among patients with brain metastases
+
+```{r}
+bm_cox <- full_join(bm_mv_cox, bm_uni_cox) %>% select(term, Univariable = unmatched, Multivariable)
+pander(bm_cox, split.table = Inf)
+#write_csv(bm_cox, "cox-bm.csv")
+```
+
+### Hazards of mortality in the overall population
+
+```{r}
+overall_cox <- full_join(mv_cox, uni_cox) %>% select(term, Univariable = unmatched, Multivariable)
+pander(overall_cox, split.table = Inf)
+#write_csv(overall_cox, "cox-overall.csv")
+```
+
+### Odds of bevacizumab prescription: Brain Mets
+
+```{r }
+results[c("bm_uni_glm", "bm_mv_glm")] %>% 
+  imap_dfr(function(dta, nm) {
+    nm <- gsub("bm_", "", nm)
+     dta %>% 
+       modify_at(
+         c("estimate", "conf.low", "conf.high"), 
+         ~ sprintf("%.2f", as.numeric(.x))
+       ) %>% 
+       mutate(
+         model = ifelse(nm == "mv_glm", "Multivariable", "Univariable"),
+         OR = paste(estimate, " (", conf.low, "-", conf.high, ", p: ", p.value, ")", sep = "")
+       )
+   }) %>% 
+    select(-estimate, -conf.low, -conf.high, -p.value) %>% 
+    fix_term_names() %>% 
+  spread(model, OR)  %>% 
+  select(term, Univariable, Multivariable) %>%
+  pander(split.table = Inf)
+```
+
+### Odds of bevacizumab prescription: Overall
+
+```{r }
+library(magrittr)
+table_bev_odds(results[c("uni_glm", "mv_glm")])  %>% 
+  select(term, Univariable, Multivariable) %>% 
+  #write_csv("glm-o.csv") %T>% 
+  pander(split.table = Inf)
+```
+
+
+### Exclusion and selection
+
+```{r eval=FALSE}
+ex <- read_rds("results/exclusion.rds")
+#pander(ex, split.table = Inf)
+
+nl <- select(mutate(ex$not_nscl, hc = as.character(Var2)), freq = Freq, hc)
+
+sh <- 
+  readxl::read_excel("documentation/seer_histo.xls") %>% 
+  rename_all(~ gsub("[^A-Za-z]", "_", tolower(.x))) %>% 
+  modify_at("histology_behavior", ~ gsub("\\/.*", "", .x)) %>% 
+  select(hc = histology_behavior, hd = histology_description) %>% 
+  distinct() %>% 
+  left_join(nl) %>% 
+  filter(!is.na(freq)) %>% 
+  group_by(hd) %>% 
+  summarise(
+    cds = paste(unique(hc), collapse = ", "), 
+    cnt = prettyNum(sum(freq), ",")
+    ) 
+  # pmap_chr(
+  #   function(hd, cds, cnt) {
+  #     p <- paste
+  #     p(str_to_title(hd), " (", p(cds, collapse = ", "), ") - ", cnt, sep = "")
+  # }) 
+
+pander(sh)
+
+r_these <- 
+    c(
+    "hmocnt"
+    , "age_dx"
+    , "typefup"
+    , "med_stcd"
+    , "race"
+    , "srv_time_mon"
+    , "vrfydth"
+    , "payerdx_v"
+  )
+
+r_w <- 
+  c(
+    ""
+    , "Age"
+    , "Follow Up"
+    , "Medicare"
+    , "Race"
+    , "Survival"
+    , "Death verified"
+    , "Insurance"
+  ) 
+
+exs <- 
+  ex$exclusions %>% 
+  (function(a) {
+    data.frame(
+      vrs = a$Vars, 
+      vls = gsub("9999", "Unknown" ,a$Values), 
+      n = as.numeric(unlist(a[1:14])), 
+      stringsAsFactors = FALSE
+      )
+    }) %>%
+  modify_at(
+    "vrs",
+    ~ reduce2(r_these, r_w, function(a, b, d) gsub(b, d, a), .init = .x)
+    ) %>% 
+  pmap_chr(function(vrs, vls, n) {
+    paste(vrs, vls, "-", prettyNum(n, ","))
+    }) %>% 
+  trimws() %>%
+  as.data.frame()
+pander(exs)
+
+```
+
+### Propensity score distributions
+
+```{r}
+library(gridExtra)
+library(zeallot)
+
+ps_p <- function(ps) {
+  p1 <- ps$unmatched
+  p2 <- ps$matched
+  list(
+    p1 + 
+      labs(x = "", y = "Count", fill = "") + 
+      theme(
+        legend.position = c(0.8, 0.7), 
+        legend.background = element_blank(), 
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()
+        ) + 
+      scale_fill_manual(labels = c("BEV-", "BEV+"), values = c("grey10", "grey60"))
+    , 
+    p2 + 
+      labs(y = "Count", fill = "") + 
+      theme(
+        legend.position = "none",
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()
+        ) + 
+      scale_fill_manual(values = c("grey10", "grey60"))
+  )
+}
+
+c(p1, p2) %<-% ps_p(results$overall_ps_plots)
+grid.arrange(p1, p2, top = text_grob("Overall Population"))
+png("figs/ov-ps.png", units = "in", width = 4, height = 6, res = 300)
+grid.arrange(p1, p2, top = text_grob("Overall Population"))
+dev.off()
+```
+
+```{r}
+c(bm_p1, bm_p2) %<-% ps_p(results$bm_ps_plots)
+png("figs/bm-ps.png", units = "in", width = 4, height = 6, res = 300)
+grid.arrange(bm_p1, bm_p2, top = text_grob("SBM Population"))
+dev.off()
+grid.arrange(bm_p1, bm_p2, top = text_grob("SBM Population"))
+```
+
+```{r}
+c(p1, p2) %<-% ps_p(results$overall_ps_plots)
+c(bm_p1, bm_p2) %<-% ps_p(results$bm_ps_plots)
+
+l_m <- rbind(c(1, 2), c(3, 4))
+
+c(p2, bm_p2) %<-% map(list(p2, bm_p2), function(p) p + labs(y = ""))
+
+bm_p1 <- 
+  bm_p1 + 
+  theme(legend.position = "none") + 
+  labs(x = "Propensity Score", y = "SBM")
+p2    <- p2    + labs(x = "")
+p1    <- 
+  p1 + 
+  theme(legend.position = c(0.7, 0.9)) + 
+  labs(y = "Overall")
+# p2 <- 
+#   results$overall_ps_plots$matched +
+#   labs(x = "", y = "") + 
+#   scale_fill_manual(labels = c("BEV-", "BEV+"), values = c("grey10", "grey60")) + 
+#   theme(
+#     axis.text.x = element_blank(), 
+#     axis.ticks.x = element_blank(),
+#     legend.position = c(0.8, 0.7), 
+#     legend.background = element_blank()
+#     )
+
+png("figs/ps.png", units = "in", width = 4, height = 4, res = 300)
+grid.arrange(p1, p2, bm_p1, bm_p2, layout_matrix = l_m)
+dev.off()
+grid.arrange(p1, p2, bm_p1, bm_p2, layout_matrix = l_m)
+```
+
+
+## Standardized mean differences
+
+
+```{r}
+
+library(ggsci)
+
+smd_plot <- 
+  results$tom %>% 
+    imap_dfr(function(tb, nm) {
+      nm <- gsub("_data$", "", nm)
+      data.frame(
+        mdl = nm,
+        vr  = rownames(tb),
+        smd = tb[,5],
+        stringsAsFactors = FALSE
+      )
+    }) %>% 
+    separate("mdl", into = c("match", "pop"), "_", fill = "right") %>%
+    modify_at("pop", function(a) ifelse(is.na(a), "Overall", "SBM")) %>% 
+    rename(term = vr) %>% 
+    modify_at("smd", ~ as.numeric(gsub("<", "", .x))) %>%
+    fix_term_names() %>% 
+    filter(!is.na(smd)) %>% 
+    filter(!grepl("bmab", tolower(term))) %>% 
+    modify_at("term", ~ trimws(gsub("\\(%\\)|:", "", .x))) %>% 
+    modify_at("term", 
+      ~ str_replace_all(.x, 
+        c("n_carbopl.*" = "Carboplatin",
+          "n_pemetrexe.*" = "Pemetrexed",
+          "n_dexameth.*" = "Dexamethasone",
+          "n_paclitax.*" = "Paclitaxel",
+          "n_cisplat.*" = "Cisplatin",
+          "B_Metro" = "Metro",
+          "race.*" = "Nonwhite",
+          " = " = "",
+          "= " = "",
+          "histo.*" = "Adenocarcinoma",
+          "^age$" = "Age"
+          )
+        )
+    ) %>% 
+    modify_at("match", str_to_title) %>% 
+    filter(!(grepl("Stage", term) & pop == "SBM")) %>% 
+    ggplot(aes(x = smd, y = reorder(term, smd), color = match)) + 
+    geom_point() + 
+    facet_wrap("pop") + 
+    #scale_color_jco() + 
+    scale_color_grey() + 
+    #scale_shape_manual(values = c(1, 16)) + 
+    theme_bw() + 
+    theme(
+      plot.title = element_text(face = "bold", size = rel(1.2), hjust = 0.5),
+      text = element_text(),
+      axis.title = element_text(face = "bold",size = rel(1)),
+      axis.title.y = element_text(color = "black", angle = 90, vjust = 2),
+      axis.title.x = element_text(vjust = -0.2),
+      axis.text = element_text(), 
+      axis.line = element_line(colour = "black"),
+      axis.ticks = element_line(),
+      panel.grid.major = element_line(colour = "#f0f0f0"),
+      panel.grid.minor = element_blank(),
+      legend.key = element_rect(colour = NA),
+      legend.position = "bottom",
+      legend.direction = "horizontal",
+      legend.key.size = unit(0.2, "cm"),
+      legend.title = element_text(face = "italic"),
+      plot.margin = unit(c(10,5,5,5), "mm"),
+      strip.background = element_rect(colour = "#f0f0f0", fill = "#f0f0f0"),
+      strip.text = element_text(face = "bold")
+    ) + 
+    labs(x = "Standardized Mean Difference", y = "", color = "")
+
+png("figs/smd-plot.png", units = "in", width = 6, height = 4, res = 300)
+smd_plot
+dev.off()
+smd_plot
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
